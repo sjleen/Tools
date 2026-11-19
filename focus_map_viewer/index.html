@@ -1,0 +1,1300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Focus Map Viewer</title>
+<style>
+/* 다크/라이트는 항상 쌍으로 두고 data-theme 속성 하나로 뒤집는다.
+   color-scheme까지 선언해야 스크롤바·기본 위젯도 같이 따라온다 */
+:root, [data-theme="light"]{
+  color-scheme: light;
+  --bg:#f7f8fa; --card:#ffffff; --ink:#1b1f24; --muted:#6b7280; --line:#e3e6ea;
+  --accent:#2f6fed; --accent-soft:#e8effd; --grid:#eef1f4;
+  --g1:#d93a31; --g2:#1f9d55; --g3:#2f6fed; --g4:#8b46d6;
+  --warn:#d97706;
+  /* 정보창은 반투명 — 가린 점이 비쳐 보이게. 다만 글자까지 흐려지면 안 되므로
+     요소 opacity 가 아니라 배경색의 알파로 준다 (opacity 는 표시/숨김 전환에만 쓴다) */
+  --tip-bg:rgba(27,31,36,.62);
+  --alert:#e5342a;
+}
+[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#14171b; --card:#1c2026; --ink:#e8eaed; --muted:#9aa3ad; --line:#2c323a;
+  --accent:#6b9cff; --accent-soft:#1e2941; --grid:#262c34;
+  --g1:#ff6b62; --g2:#3fc783; --g3:#6b9cff; --g4:#bd85f0;
+  --warn:#fbbf24;
+  --tip-bg:rgba(232,234,237,.66);
+  --alert:#ff5347;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;overflow:hidden;background:var(--bg);color:var(--ink);
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;}
+
+/* 가로를 끝까지 쓴다 — 중앙 정렬·최대폭 없음.
+   헤더는 화면 끝까지 닿아야 하므로 패딩은 #app이 아니라 각 구역이 갖는다 */
+#app{height:100%;display:flex;flex-direction:column}
+#main{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px 10px}
+
+/* ---- intro / drop zone ---- */
+#intro{flex:1;min-height:0;padding:20px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:16px;text-align:center}
+#intro p{color:var(--muted);margin:0}
+#drop{display:block;width:min(560px,100%);border:1.5px dashed var(--line);border-radius:12px;
+  background:var(--card);padding:38px 24px;cursor:pointer;transition:.15s}
+#drop:hover,#drop.over{border-color:var(--accent);background:var(--accent-soft)}
+#drop b{display:block;font-size:15px;margin-bottom:5px}
+#drop span{color:var(--muted)}
+#file{display:none}
+.err{width:min(560px,100%);padding:11px 13px;border-radius:9px;background:#fdecea;color:#8a1c16;
+  border:1px solid #f5c2bd;white-space:pre-wrap;text-align:left}
+[data-theme="dark"] .err{background:#3a1c19;color:#ffb3ad;border-color:#5c2a25}
+
+/* ---- header: 다른 앱들과 같은 납작한 한 줄 바 (카드로 감싸지 않는다).
+     파일을 고르기 전에도 헤더는 늘 떠 있다 — 제목 3줄이 어느 화면에서나 같은 자리에
+     있어야 하므로, 파일 관련 도구만 #topbar-tools 로 묶어 감춘다. ---- */
+header{background:var(--card);border-bottom:1px solid var(--line);
+  padding:12px 14px 10px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;flex-shrink:0}
+header .spacer{flex:1}
+#topbar-tools{flex:1;min-width:0;display:flex;align-items:center;gap:18px}
+/* 제목 3줄 블록 — 앱 공통 표준 (기준: Allen CCF Explorer).
+   자리: 블록 왼쪽 위 모서리가 화면 기준 top 12px / left 14px. 헤더 패딩 12px 14px 10px +
+   align-self:flex-start 로 고정한다 — 가운데 정렬이나 다른 항목 높이에 밀리지 않게.
+   치수: h1 13.5px/600/.02em → 부제 11px → Created by 11px(margin-top:2px).
+   본문은 line-height 1.5지만 브랜드만 normal 로 둬야 줄 간격이 기준과 같다. */
+.brand{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:flex;flex-direction:column;line-height:normal;white-space:nowrap;
+  flex-shrink:0;align-self:flex-start}
+.brand h1{font-size:13.5px;font-weight:600;color:var(--ink);letter-spacing:.02em;margin:0 0 1px}
+.subtitle{font-size:11px;color:var(--muted)}
+.subtitle a{color:inherit}
+.fileinfo{min-width:0}
+.fname{font-weight:600;font-size:13.5px;word-break:break-all}
+.fmeta{color:var(--muted);font-size:12px;word-break:break-all}
+.btns{display:flex;gap:7px;align-items:center;flex-shrink:0}
+button,.btn,select{font:inherit;font-size:12.5px;padding:5px 11px;border-radius:7px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button:hover,.btn:hover{border-color:var(--accent);color:var(--accent)}
+/* 헤더 맨 끝 ghost 테마 토글 */
+button.ghost{border-color:transparent;background:transparent;color:var(--muted);
+  font-size:15px;line-height:1;padding:4px 8px}
+button.ghost:hover{color:var(--accent);border-color:var(--line)}
+
+/* ---- stats strip ---- */
+#stats{display:flex;flex-wrap:wrap;gap:7px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:8px;
+  padding:5px 10px;color:var(--muted);font-size:12.5px;white-space:nowrap}
+.stat b{color:var(--ink);font-weight:650;font-size:14px;margin-left:6px;font-variant-numeric:tabular-nums}
+.stat i{font-style:normal;margin-left:3px;font-size:11.5px}
+.stat.leg{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.sw{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.leg em{font-style:normal;color:var(--ink);font-weight:600}
+.leg .fl{color:var(--warn);font-weight:600}
+/* 그룹 포커스 — 칩 호버(일시) 또는 클릭(고정)한 그룹 외의 표시를 흐리게 한다.
+   2D는 요소에 붙인 g0..g3 클래스와 #main[data-focus] 속성만으로 처리해서 다시 그리지 않는다 */
+.stat.leg{cursor:pointer;transition:opacity .12s,border-color .12s}
+.stat.leg.pinned{border-color:var(--ink)}
+#main[data-focus] .stat.leg:not(.focus){opacity:.45}
+.gm{transition:opacity .12s}
+#main[data-focus="0"] .gm:not(.g0),
+#main[data-focus="1"] .gm:not(.g1),
+#main[data-focus="2"] .gm:not(.g2),
+#main[data-focus="3"] .gm:not(.g3){opacity:.12}
+/* 허용오차 입력 — 범례 줄 끝에 붙는다. 범례는 매번 다시 그리므로 입력칸은 그 밖에 둬야
+   타이핑 중 포커스를 잃지 않는다 */
+#legendRow{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+.tolbox{display:flex;align-items:center;gap:6px}
+.tolbox input{width:62px;font:inherit;font-size:12.5px;padding:2px 6px;border-radius:6px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums}
+.tolbox select{font-size:12.5px;padding:2px 6px;border-radius:6px;background:var(--bg)}
+.tolbox b{color:var(--warn);margin-left:0}
+.ring{width:11px;height:11px;border-radius:50%;border:2px solid var(--warn);flex-shrink:0}
+
+/* ---- views ---- */
+/* 2D 세 패널(좌) : 3D(우) = 2 : 1, 둘 다 항상 보인다 */
+#views{flex:1;min-height:0;display:flex;flex-direction:row;gap:8px}
+#view2d{flex:2;min-width:0;min-height:0;display:flex;flex-direction:column;gap:8px}
+#view3d{flex:1;min-width:0;min-height:0;display:flex}
+.card{flex:1;min-height:0;display:flex;flex-direction:column;
+  background:var(--card);border:1px solid var(--line);border-radius:10px;padding:7px 12px 6px;position:relative}
+.card h2{font-size:13px;margin:0 0 3px;font-weight:650;color:var(--muted);letter-spacing:.02em}
+/* 3D 칸이 좁으므로 컨트롤은 한 줄에 눌러담고, 슬라이더만 남는 폭을 먹는다 */
+.chead{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:3px}
+.chead h2{margin:0}
+.chead button{padding:3px 8px;font-size:11.5px}
+.ctrl{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;
+  flex:1 1 150px;min-width:130px}
+.ctrl input[type=range]{flex:1;min-width:52px;accent-color:var(--accent)}
+.ctrl b{color:var(--ink);font-size:12.5px;font-variant-numeric:tabular-nums;
+  min-width:46px;text-align:right}
+.hint{color:var(--muted);font-size:11.5px}
+.plot{flex:1;min-height:0;position:relative}
+.plot svg,.plot canvas{position:absolute;inset:0;display:block}
+#p3d{cursor:grab}
+#p3d.drag{cursor:grabbing}
+.axis text{font-size:11.5px;fill:var(--muted)}
+.gridline{stroke:var(--grid);stroke-width:1}
+.axisline{stroke:var(--line);stroke-width:1.2}
+.tip{position:absolute;pointer-events:none;background:var(--tip-bg);color:var(--bg);font-size:12px;
+  padding:5px 8px;border-radius:6px;white-space:pre;opacity:0;transition:opacity .1s;z-index:5;
+  border:3px solid transparent;
+  font-variant-numeric:tabular-nums;
+  /* 배경을 많이 비우면 글자 대비가 떨어진다 — 뒤를 살짝 흐려 글자만 살린다
+     (지원 안 되는 브라우저에서는 그냥 반투명으로만 보인다) */
+  backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+/* 감지된 점의 정보창 — 배경이 반투명이라 색조만으로는 티가 안 난다. 점에 찍히는 링과
+   같은 색(--warn) 테두리로 표시. 테두리는 기본 상태에서도 투명색으로 자리를 잡아 둬서
+   감지된 점으로 옮겨갈 때 창 크기가 흔들리지 않는다 */
+.tip.flag{border-color:var(--warn)}
+/* 선택한 점의 정보 — 3D 뷰 위쪽에 고정. 커서를 치워도 남아 있어 회전시키며 볼 수 있다 */
+.selinfo{position:absolute;left:6px;top:6px;z-index:4;pointer-events:none;
+  background:var(--tip-bg);color:var(--bg);border:3px solid transparent;border-radius:6px;
+  padding:5px 8px;font-size:12px;line-height:1.45;white-space:pre;font-variant-numeric:tabular-nums;
+  backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+.selinfo.flag{border-color:var(--warn)}
+.hide{display:none !important}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <h1>Focus Map Viewer</h1>
+      <div class="subtitle">Focus map XML review &middot; v1.0</div>
+      <div class="subtitle" style="margin-top:2px;">Created by <a href="https://github.com/sjleen" target="_blank" rel="noopener">sjleen</a></div>
+    </div>
+    <div id="topbar-tools" class="hide">
+      <div class="fileinfo">
+        <div class="fname" id="fname"></div>
+        <div class="fmeta" id="fmeta"></div>
+      </div>
+      <div class="spacer"></div>
+      <div class="btns">
+        <select id="group" class="hide"></select>
+        <label class="btn" for="file">Change file</label>
+        <button id="csv">Export CSV</button>
+        <button id="btnTheme" class="ghost" title="Switch theme">&#9680;</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="intro">
+    <p>Upload a focus map XML exported from the microscope to review its Z profile and X&ndash;Z / Y&ndash;Z distributions.</p>
+    <label id="drop" for="file">
+      <b>Drop an XML file here, or click to choose</b>
+      <span>Focus map export (.xml, .eexp, .txt) &middot; processed entirely in your browser</span>
+      <input type="file" id="file" accept=".xml,.eexp,.txt,text/xml">
+    </label>
+    <div id="err" class="err hide"></div>
+  </div>
+
+  <div id="main" class="hide">
+  <div id="stats"></div>
+  <div id="legendRow">
+    <div id="legend" style="display:contents"></div>
+    <div class="stat tolbox" title="How each group's expected Z is modelled. Surface methods fit one plane/quadratic per group; robust fits ignore points that jump away. Local median compares each point with its 8 nearest neighbours in the same group; local plane fits a small distance-weighted, robust plane through the 12 nearest neighbours and reads its height at the point.">
+      <label for="method">Reference</label>
+      <select id="method">
+        <option value="rquad" selected>Quadratic · robust</option>
+        <option value="quad">Quadratic · least squares</option>
+        <option value="rplane">Plane · robust</option>
+        <option value="plane">Plane · least squares</option>
+        <option value="local">Local median · 8 nearest</option>
+        <option value="lplane">Local plane · 12 nearest</option>
+      </select>
+    </div>
+    <div class="stat tolbox" title="Each group gets its own σ (1.4826 × MAD of the deviations from its reference). Points farther than k·σ from their reference are flagged.">
+      <span class="ring"></span>
+      <label for="tol">Plane tolerance &plusmn;</label>
+      <input type="number" id="tol" value="3" min="0" step="0.5">
+      <i>&sigma;</i>
+      <span>&middot; <b id="flagN">0</b> flagged</span>
+    </div>
+  </div>
+
+  <div id="views">
+    <div id="view2d">
+      <div class="card"><h2>Z &mdash; scan order</h2><div class="plot" id="c1"></div></div>
+      <div class="card"><h2>X &ndash; Z</h2><div class="plot" id="c2"></div></div>
+      <div class="card"><h2>Y &ndash; Z</h2><div class="plot" id="c3"></div></div>
+    </div>
+
+    <div id="view3d">
+      <div class="card">
+        <div class="chead">
+          <h2>X &ndash; Y &ndash; Z</h2>
+          <button id="reset3d">Reset view</button>
+          <label class="hint" title="Show each group's reference (the surface, or each point's neighbour median)"><input type="checkbox" id="showRef" checked style="vertical-align:-2px;margin:0 3px 0 0">ref</label>
+          <label class="hint" title="Show the detection threshold: reference ± k·σ (dashed boundary surfaces, or a bar per point for local median)"><input type="checkbox" id="showBand" checked style="vertical-align:-2px;margin:0 3px 0 0">&plusmn;k&sigma;</label>
+          <span class="hint">drag &middot; scroll</span>
+          <div class="ctrl">
+            <label for="exag">Z &times;</label>
+            <input type="range" id="exag" min="0" max="100" value="60">
+            <b id="exagVal">1&times;</b>
+          </div>
+        </div>
+        <div class="plot" id="p3d"><div id="selInfo" class="selinfo hide"></div></div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+/* ---------------- parsing ---------------- */
+function childNum(el, name){
+  for (const c of el.children){
+    if (c.tagName === name || c.tagName.toUpperCase() === name){
+      const v = parseFloat((c.textContent || "").replace(/,/g, "").trim());
+      return isFinite(v) ? v : null;
+    }
+  }
+  return null;
+}
+function pathOf(el){
+  const p = []; let n = el;
+  while (n && n.nodeType === 1){ p.unshift(n.tagName); n = n.parentElement; }
+  return p.join(" / ");
+}
+// The browser never exposes the uploaded file's own disk path, but the
+// microscope records the experiment path in the XML — use that when present.
+function sourcePath(doc){
+  const root = doc.documentElement;
+  if (root && root.getAttribute("Filename")) return root.getAttribute("Filename");
+  for (const el of doc.getElementsByTagName("*")){
+    const v = el.getAttribute("Filename") || el.getAttribute("FileName") || el.getAttribute("Path");
+    if (v && /[\\/]/.test(v)) return v;
+  }
+  return "";
+}
+// Treat every element carrying X, Y and Z children as a coordinate,
+// then group them by their parent path so unrelated blocks stay separate.
+function parseFile(text){
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  const perr = doc.querySelector("parsererror");
+  if (perr) throw new Error("Could not parse the XML.\n" + perr.textContent.trim().slice(0, 300));
+
+  const groups = new Map();
+  for (const el of doc.getElementsByTagName("*")){
+    const x = childNum(el, "X"), y = childNum(el, "Y"), z = childNum(el, "Z");
+    if (x === null || y === null || z === null) continue;
+    const key = pathOf(el.parentElement || el);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ x: x, y: y, z: z });
+  }
+  const list = Array.from(groups, function(e){ return { key: e[0], pts: e[1] }; })
+                    .sort(function(a, b){ return b.pts.length - a.pts.length; });
+  if (!list.length) throw new Error("No X/Y/Z coordinates were found in this file.\nCheck that it is a focus map export.");
+  return { groups: list, source: sourcePath(doc) };
+}
+
+/* ---------------- statistics ---------------- */
+function solve3(M, V){
+  const A = M.map(function(r, i){ return r.concat([V[i]]); });
+  for (let i = 0; i < 3; i++){
+    let piv = i;
+    for (let r = i + 1; r < 3; r++) if (Math.abs(A[r][i]) > Math.abs(A[piv][i])) piv = r;
+    if (Math.abs(A[piv][i]) < 1e-9) return null;
+    const t = A[i]; A[i] = A[piv]; A[piv] = t;
+    for (let r = 0; r < 3; r++){
+      if (r === i) continue;
+      const f = A[r][i] / A[i][i];
+      for (let c = i; c < 4; c++) A[r][c] -= f * A[i][c];
+    }
+  }
+  return [A[0][3] / A[0][0], A[1][3] / A[1][1], A[2][3] / A[2][2]];
+}
+// least-squares plane  z = a + b*x + c*y
+function planeFit(pts){
+  const n = pts.length;
+  let Sx=0, Sy=0, Sz=0, Sxx=0, Sxy=0, Syy=0, Sxz=0, Syz=0;
+  for (const p of pts){
+    Sx += p.x; Sy += p.y; Sz += p.z;
+    Sxx += p.x * p.x; Sxy += p.x * p.y; Syy += p.y * p.y;
+    Sxz += p.x * p.z; Syz += p.y * p.z;
+  }
+  const sol = solve3([[n, Sx, Sy], [Sx, Sxx, Sxy], [Sy, Sxy, Syy]], [Sz, Sxz, Syz]);
+  if (!sol) return { a: Sz / n, b: 0, c: 0 };
+  return { a: sol[0], b: sol[1], c: sol[2] };
+}
+function extent(vals){
+  let lo = Infinity, hi = -Infinity;
+  for (const v of vals){ if (v < lo) lo = v; if (v > hi) hi = v; }
+  return [lo, hi];
+}
+function analyze(pts){
+  const n = pts.length;
+  const z = pts.map(function(p){ return p.z; });
+  const mean = z.reduce(function(a, b){ return a + b; }, 0) / n;
+  const sd = Math.sqrt(z.reduce(function(a, b){ return a + (b - mean) * (b - mean); }, 0) / Math.max(1, n - 1));
+  const ze = extent(z), xe = extent(pts.map(function(p){ return p.x; })), ye = extent(pts.map(function(p){ return p.y; }));
+
+  const pl = planeFit(pts);
+  const planeRes = pts.map(function(p){ return p.z - (pl.a + pl.b * p.x + pl.c * p.y); });
+  const planeRms = Math.sqrt(planeRes.reduce(function(a, b){ return a + b * b; }, 0) / n);
+
+  let maxStep = 0;
+  for (let i = 1; i < n; i++){
+    const d = Math.abs(z[i] - z[i - 1]);
+    if (d > maxStep) maxStep = d;
+  }
+  return { n: n, mean: mean, sd: sd, xe: xe, ye: ye, ze: ze,
+           zmin: ze[0], zmax: ze[1], span: ze[1] - ze[0],
+           pl: pl, planeRms: planeRms, maxStep: maxStep };
+}
+
+/* ---------------- shared helpers ---------------- */
+function niceTicks(lo, hi, count){
+  const span = (hi - lo) || 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(span / count)));
+  const norm = (span / count) / mag;
+  const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) out.push(v);
+  return out;
+}
+function fmt(v, d){
+  return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+function padRange(lo, hi, f){
+  const m = (hi - lo) * f || Math.max(1, Math.abs(hi) * 1e-4);
+  return [lo - m, hi + m];
+}
+/* ---------------- X groups ---------------- */
+// The stage layout puts the focus points in four X blocks. These cuts sit in the
+// empty gaps between them (25,070–36,350 / 52,522–65,016 / 81,188–93,107 µm in the
+// reference scan) and are fixed, so the same four groups apply to every file.
+const XCUTS = [30000, 59000, 87000];
+const GCOL = ["--g1", "--g2", "--g3", "--g4"];
+function groupOf(x){
+  let g = 0;
+  while (g < XCUTS.length && x >= XCUTS[g]) g++;
+  return g;
+}
+function groupLabel(g){
+  const lo = g === 0 ? null : XCUTS[g - 1];
+  const hi = g === XCUTS.length ? null : XCUTS[g];
+  if (lo === null) return "X < " + fmt(hi, 0);
+  if (hi === null) return "X ≥ " + fmt(lo, 0);
+  return fmt(lo, 0) + " – " + fmt(hi, 0);
+}
+
+/* ---------------- reference models ---------------- */
+// X 그룹마다 "정상이라면 이 XY에서 Z는 이 정도"를 주는 기준을 세우고, 각 점이 자기 그룹
+// 기준에서 얼마나 떨어졌는지(µm) 잰다. 그룹을 나누는 이유는 블록 간 Z 단차 — 전체를
+// 한 기준으로 보면 단차가 전부 편차로 잡힌다. 어떤 기준이 나은지는 사용자가 직접 비교한다.
+const METHODS = {
+  plane:  { label: "Plane · least squares",     deg: 1, robust: false },
+  rplane: { label: "Plane · robust",            deg: 1, robust: true  },
+  quad:   { label: "Quadratic · least squares", deg: 2, robust: false },
+  rquad:  { label: "Quadratic · robust",        deg: 2, robust: true  },
+  local:  { label: "Local median · 8 nearest",  local: "median" },
+  lplane: { label: "Local plane · 12 nearest",  local: "plane" }
+};
+function median(arr){
+  if (!arr.length) return 0;
+  const s = arr.slice().sort(function(a, b){ return a - b; });
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+// σ 는 표준편차가 아니라 MAD × 1.4826 — 표준편차는 찾으려는 이상점 자체에 부풀려진다
+// (실데이터 그룹 3: 기준점 하나로 RMS 12 µm, 나머지 대부분은 3–4 µm 안).
+// 1.4826 은 정규분포에서 MAD 를 σ 로 맞추는 상수.
+function robustSigma(r){
+  const m = median(r);
+  return 1.4826 * median(r.map(function(v){ return Math.abs(v - m); }));
+}
+// n×n 가우스 소거 (부분 피벗). 특이하면 null
+function solveN(A, b){
+  const n = b.length;
+  const M = A.map(function(r, i){ return r.concat([b[i]]); });
+  for (let i = 0; i < n; i++){
+    let p = i;
+    for (let r = i + 1; r < n; r++) if (Math.abs(M[r][i]) > Math.abs(M[p][i])) p = r;
+    if (Math.abs(M[p][i]) < 1e-12) return null;
+    const t = M[i]; M[i] = M[p]; M[p] = t;
+    for (let r = 0; r < n; r++){
+      if (r === i) continue;
+      const f = M[r][i] / M[i][i];
+      for (let c = i; c <= n; c++) M[r][c] -= f * M[i][c];
+    }
+  }
+  return M.map(function(r, i){ return r[n] / r[i]; });
+}
+// 가중 최소자승 곡면. deg 1 = 평면, 2 = 2차 곡면(z = a + bu + cv + du² + euv + fv²).
+// 좌표는 그룹 중심 기준 mm 로 바꿔서 푼다 — µm 그대로 제곱항을 만들면 1e10 단위라
+// 정규방정식이 불안정해진다. 점이 모자라면 한 단계 낮은 모델, 끝내 안 되면 가중 평균.
+function surfaceFit(pts, deg, w){
+  const n = pts.length;
+  let sw = 0, cx = 0, cy = 0, zm = 0;
+  pts.forEach(function(p, i){ const wi = w ? w[i] : 1; sw += wi; cx += wi * p.x; cy += wi * p.y; zm += wi * p.z; });
+  if (!(sw > 0)) return function(){ return 0; };
+  cx /= sw; cy /= sw; zm /= sw;
+  const k = deg === 2 ? 6 : 3;
+  const terms = deg === 2
+    ? function(u, v){ return [1, u, v, u * u, u * v, v * v]; }
+    : function(u, v){ return [1, u, v]; };
+  const flat = function(){ return zm; };
+  if (n < k) return deg === 2 ? surfaceFit(pts, 1, w) : flat;
+  const A = [], b = new Array(k).fill(0);
+  for (let a = 0; a < k; a++) A.push(new Array(k).fill(0));
+  pts.forEach(function(p, i){
+    const wi = w ? w[i] : 1;
+    if (!wi) return;
+    const t = terms((p.x - cx) / 1000, (p.y - cy) / 1000);
+    for (let a = 0; a < k; a++){
+      b[a] += wi * t[a] * p.z;
+      for (let c = 0; c < k; c++) A[a][c] += wi * t[a] * t[c];
+    }
+  });
+  const s = solveN(A, b);
+  if (!s) return deg === 2 ? surfaceFit(pts, 1, w) : flat;
+  return function(x, y){
+    const t = terms((x - cx) / 1000, (y - cy) / 1000);
+    let z = 0;
+    for (let a = 0; a < k; a++) z += t[a] * s[a];
+    return z;
+  };
+}
+// 로버스트 적합 — Tukey biweight 반복 재가중. 기준에서 4.685σ 넘게 벗어난 점은 가중치 0 이
+// 되어, 튀는 점이 기준면을 자기 쪽으로 끌어당기지 못한다
+function robustFit(pts, deg){
+  let f = surfaceFit(pts, deg, null);
+  for (let it = 0; it < 10; it++){
+    const r = pts.map(function(p){ return p.z - f(p.x, p.y); });
+    const s = robustSigma(r);
+    if (!(s > 0)) break;
+    const w = r.map(function(v){ const u = v / (4.685 * s); return Math.abs(u) < 1 ? (1 - u * u) * (1 - u * u) : 0; });
+    f = surfaceFit(pts, deg, w);
+  }
+  return f;
+}
+// 국소 기준 — 같은 그룹 안에서 XY 로 가장 가까운 k 개 이웃의 Z 중앙값 (자기 자신 제외)
+function localRef(pts, k){
+  k = Math.min(k, pts.length - 1);
+  return pts.map(function(p, i){
+    if (k < 1) return p.z;
+    const d = [];
+    pts.forEach(function(q, j){ if (j !== i) d.push({ d2: (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y), z: q.z }); });
+    d.sort(function(a, b){ return a.d2 - b.d2; });
+    return median(d.slice(0, k).map(function(o){ return o.z; }));
+  });
+}
+// 국소 평면 (LOESS 계열) — 이웃 중앙값은 그룹 가장자리에서 이웃이 한쪽에만 있어 면의 기울기만큼
+// 기준이 치우친다(실데이터 추정 ~6 µm). 이웃으로 작은 평면을 맞춰 "이 XY에서의 높이"를 읽으면
+// 기울기가 상쇄된다. 12개인 이유: 평면 계수 3개를 안정적으로 풀면서 여전히 국소적인 최소 규모.
+//  · 거리 가중치 tricube (1-(d/D)^3)^3 — 가까운 이웃이 더 큰 비중. D는 12번째 거리의 1.1배라
+//    가장 먼 이웃도 가중치가 0이 되지 않는다
+//  · 로버스트 재가중 4회 — 이웃 중 튄 점이 작은 평면을 기울이지 못하게 (Tukey biweight)
+// 반환: { z: 기준 높이, b/c: 그 국소 평면의 X·Y 기울기, h: 3D에 그릴 판의 반폭 }
+function localPlaneRef(pts, k){
+  k = Math.min(k, pts.length - 1);
+  return pts.map(function(p, i){
+    if (k < 3){
+      const z = k < 1 ? p.z : median(pts.filter(function(_, j){ return j !== i; }).map(function(q){ return q.z; }));
+      return { z: z, b: 0, c: 0, h: 0 };
+    }
+    const d = [];
+    pts.forEach(function(q, j){ if (j !== i) d.push({ d: Math.hypot(q.x - p.x, q.y - p.y), q: q }); });
+    d.sort(function(a, b){ return a.d - b.d; });
+    const nb = d.slice(0, k);
+    const D = nb[nb.length - 1].d * 1.1 || 1;
+    const wd = nb.map(function(o){ const u = o.d / D; return Math.pow(1 - u * u * u, 3); });
+    const q = nb.map(function(o){ return o.q; });
+    let f = surfaceFit(q, 1, wd);
+    for (let it = 0; it < 4; it++){
+      const r = q.map(function(o){ return o.z - f(o.x, o.y); });
+      const s = robustSigma(r);
+      if (!(s > 0)) break;
+      const w = r.map(function(v, j){ const u = v / (4.685 * s); return Math.abs(u) < 1 ? wd[j] * (1 - u * u) * (1 - u * u) : 0; });
+      f = surfaceFit(q, 1, w);
+    }
+    // 평면이라 기울기는 유한차분으로 정확히 나온다. 판 크기는 이웃 반경에 비례시켜
+    // 성긴 곳은 크게, 촘촘한 곳은 작게 — 서로 심하게 겹치지 않을 정도(0.35배)
+    const z = f(p.x, p.y), s = 1000;
+    return { z: z, b: (f(p.x + s, p.y) - f(p.x - s, p.y)) / (2 * s),
+                   c: (f(p.x, p.y + s) - f(p.x, p.y - s)) / (2 * s),
+                   h: nb[nb.length - 1].d * 0.2 };
+  });
+}
+// 선택한 방법으로 그룹별 기준을 세운다.
+// ref[i] = 점 i 의 기준 Z, res[i] = z − ref, groups[g] = { f(곡면 방법만), 범위, σ }
+function buildModel(pts, method){
+  const m = METHODS[method] || METHODS.plane;
+  const res = new Array(pts.length).fill(0), ref = new Array(pts.length).fill(0);
+  const patch = new Array(pts.length).fill(null);   // 국소 평면 방법에서만 채워진다
+  const groups = [];
+  for (let g = 0; g <= XCUTS.length; g++){
+    const idx = [];
+    pts.forEach(function(p, i){ if (groupOf(p.x) === g) idx.push(i); });
+    if (!idx.length){ groups.push(null); continue; }
+    const gp = idx.map(function(i){ return pts[i]; });
+    let f = null, refs;
+    if (m.local === "plane"){
+      const lp = localPlaneRef(gp, 12);
+      refs = lp.map(function(o){ return o.z; });
+      idx.forEach(function(i, j){ patch[i] = lp[j]; });
+    }
+    else if (m.local) refs = localRef(gp, 8);
+    else {
+      f = m.robust ? robustFit(gp, m.deg) : surfaceFit(gp, m.deg, null);
+      refs = gp.map(function(p){ return f(p.x, p.y); });
+    }
+    idx.forEach(function(i, j){ ref[i] = refs[j]; res[i] = pts[i].z - refs[j]; });
+    // 3D에 그릴 범위 = 그 그룹 점들이 실제로 덮는 XY 사각형 (면을 그 밖으로 늘리지 않는다)
+    const xe = extent(gp.map(function(p){ return p.x; }));
+    const ye = extent(gp.map(function(p){ return p.y; }));
+    groups.push({ f: f, x0: xe[0], x1: xe[1], y0: ye[0], y1: ye[1],
+                  sig: robustSigma(idx.map(function(i){ return res[i]; })) });
+  }
+  return { res: res, ref: ref, groups: groups, local: m.local || false, patch: patch };
+}
+function tolerance(){
+  const v = parseFloat(document.getElementById("tol").value);
+  return isFinite(v) && v >= 0 ? v : Infinity;   // 비우거나 잘못 쓰면 판정을 끈다
+}
+
+function readout(i){
+  const p = STATE.pts[i];
+  const r = STATE.res[i] || 0;
+  const sg = STATE.sig[groupOf(p.x)];
+  return "#" + (i + 1) + "  ·  group " + (groupOf(p.x) + 1)
+       + "\nZ " + fmt(p.z, 2) + "\nX " + fmt(p.x, 2) + "   Y " + fmt(p.y, 2)
+       + "\nref Z " + fmt(STATE.model.ref[i], 2)
+       + "\ndev " + (r >= 0 ? "+" : "") + fmt(r, 2) + " µm"
+       + (sg > 0 ? "  (" + (r >= 0 ? "+" : "") + fmt(r / sg, 1) + "σ)" : "")
+       + (STATE.flag[i] ? "  ⚠ out of tolerance" : "");
+}
+function showTip(card, clientX, clientY, text, flagged){
+  let tip = card.querySelector(".tip");
+  if (!tip){ tip = document.createElement("div"); tip.className = "tip"; card.appendChild(tip); }
+  tip.textContent = text;
+  tip.classList.toggle("flag", !!flagged);   // 감지된 점이면 붉은 기 도는 배경
+  const cr = card.getBoundingClientRect();
+  tip.style.left = Math.min(clientX - cr.left + 14, cr.width - 150) + "px";
+  tip.style.top = Math.max(2, clientY - cr.top - 46) + "px";
+  tip.style.opacity = 1;
+}
+function hideTips(){
+  document.querySelectorAll(".tip").forEach(function(t){ t.style.opacity = 0; });
+}
+
+/* ---------------- 2D charts ---------------- */
+// Every panel registers here so hovering one can highlight the same
+// point in the other two.
+const CHARTS = [];
+
+function renderChart(host, cfg){
+  const W = Math.max(260, host.clientWidth);
+  const H = Math.max(70, host.clientHeight);
+  const PAD = { l: 68, r: 14, t: 16, b: H < 130 ? 19 : 24 };
+  const x0 = cfg.xDomain[0], x1 = cfg.xDomain[1];
+  const y0 = cfg.yDomain[0], y1 = cfg.yDomain[1];
+  const sx = function(v){ return PAD.l + (v - x0) / ((x1 - x0) || 1) * (W - PAD.l - PAD.r); };
+  const sy = function(v){ return PAD.t + (1 - (v - y0) / ((y1 - y0) || 1)) * (H - PAD.t - PAD.b); };
+
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '"><g class="axis">';
+  for (const t of niceTicks(y0, y1, H < 150 ? 3 : 4)){
+    const py = sy(t).toFixed(1);
+    s += '<line class="gridline" x1="' + PAD.l + '" x2="' + (W - PAD.r) + '" y1="' + py + '" y2="' + py + '"/>'
+       + '<text x="' + (PAD.l - 8) + '" y="' + (sy(t) + 4).toFixed(1) + '" text-anchor="end">' + fmt(t, 0) + '</text>';
+  }
+  // the x-axis caption sits on the tick-label line; drop any tick that would run into it
+  const capGuard = (W - PAD.r) - cfg.xUnit.length * 6.3 - 10;
+  for (const t of niceTicks(x0, x1, W < 700 ? 4 : 7)){
+    const px = sx(t);
+    s += '<line class="gridline" y1="' + PAD.t + '" y2="' + (H - PAD.b) + '" x1="' + px.toFixed(1) + '" x2="' + px.toFixed(1) + '"/>';
+    if (px < capGuard)
+      s += '<text x="' + px.toFixed(1) + '" y="' + (H - PAD.b + 15) + '" text-anchor="middle">' + fmt(t, 0) + '</text>';
+  }
+  s += '<line class="axisline" x1="' + PAD.l + '" x2="' + (W - PAD.r) + '" y1="' + (H - PAD.b) + '" y2="' + (H - PAD.b) + '"/>'
+     + '<line class="axisline" x1="' + PAD.l + '" x2="' + PAD.l + '" y1="' + PAD.t + '" y2="' + (H - PAD.b) + '"/>'
+     + '<text x="' + (W - PAD.r) + '" y="' + (H - PAD.b + 15) + '" text-anchor="end">' + cfg.xUnit + '</text>'
+     + '<text x="' + (PAD.l - 8) + '" y="' + (PAD.t - 5) + '" text-anchor="end">Z (µm)</text></g>';
+
+  if (cfg.mode === "line"){
+    // one stroke per run of consecutive points in the same X group — the pen lifts
+    // at every group change, so nothing connects across blocks
+    let i = 0;
+    while (i < cfg.points.length){
+      const g = groupOf(STATE.pts[cfg.points[i].i].x);
+      let d = "", j = i;
+      while (j < cfg.points.length && groupOf(STATE.pts[cfg.points[j].i].x) === g){
+        const p = cfg.points[j];
+        d += (j === i ? "M" : "L") + sx(p.px).toFixed(1) + " " + sy(p.py).toFixed(1) + " ";
+        j++;
+      }
+      // a run of one has no segment to draw; repeat the point so the round cap shows it
+      if (j - i === 1) d += "L" + sx(cfg.points[i].px).toFixed(1) + " " + sy(cfg.points[i].py).toFixed(1);
+      s += '<path class="gm g' + g + '" d="' + d + '" fill="none" stroke="var(' + GCOL[g] + ')" stroke-width="1.7"'
+         + ' stroke-linecap="round" stroke-linejoin="round"/>';
+      i = j;
+    }
+  } else {
+    for (const p of cfg.points){
+      const g = groupOf(STATE.pts[p.i].x);
+      s += '<circle class="gm g' + g + '" cx="' + sx(p.px).toFixed(1) + '" cy="' + sy(p.py).toFixed(1)
+         + '" r="2.7" fill="var(' + GCOL[g] + ')" fill-opacity="0.78"/>';
+    }
+  }
+  // 허용오차 밖 점 — 호버 링(검정, r7)과 겹쳐도 구분되게 색·반지름을 달리한다
+  for (const p of cfg.points){
+    if (!STATE.flag[p.i]) continue;
+    s += '<circle class="gm g' + groupOf(STATE.pts[p.i].x) + '" cx="' + sx(p.px).toFixed(1) + '" cy="' + sy(p.py).toFixed(1)
+       + '" r="5.2" fill="none" stroke="var(--warn)" stroke-width="1.9"/>';
+  }
+  // 클릭으로 고정한 점 — 호버(r7, 1.7)보다 굵은 링 + 옅은 후광이라 호버가 다른 점에 있어도 구분된다
+  s += '<g class="sel" style="display:none">'
+     + '<circle r="13" fill="var(--ink)" fill-opacity="0.13"/>'
+     + '<circle r="8.5" fill="none" stroke="var(--ink)" stroke-width="2.6"/>'
+     + '<circle r="3.4" fill="var(--ink)"/></g>';
+  // highlight marker for the point currently being read out
+  s += '<g class="hl" style="display:none">'
+     + '<circle r="3.2" fill="var(--ink)"/>'
+     + '<circle r="7" fill="none" stroke="var(--ink)" stroke-width="1.7"/></g>';
+  host.innerHTML = s + "</svg>";
+
+  const card = host.closest(".card");
+  const svg = host.querySelector("svg");
+  const hl = svg.querySelector(".hl");
+  const sel = svg.querySelector(".sel");
+  function place(g, i){
+    const p = cfg.points[i];
+    if (!p){ g.style.display = "none"; return; }
+    g.setAttribute("transform", "translate(" + sx(p.px).toFixed(1) + "," + sy(p.py).toFixed(1) + ")");
+    g.style.display = "";
+  }
+  const entry = {
+    points: cfg.points,
+    mark: function(i){ place(hl, i); },
+    unmark: function(){ hl.style.display = "none"; },
+    select: function(i){ place(sel, i); }
+  };
+  CHARTS.push(entry);
+  // 다시 그려도(허용오차 변경·창 크기 변경) 선택은 유지
+  if (STATE.sel >= 0) entry.select(STATE.sel);
+
+  function nearest(ev){
+    // client coords -> SVG user space, so the readout stays exact at any size
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return -1;
+    const pt = svg.createSVGPoint();
+    pt.x = ev.clientX; pt.y = ev.clientY;
+    const u = pt.matrixTransform(ctm.inverse());
+    let best = -1, bd = 1e9;
+    cfg.points.forEach(function(p, i){
+      const dx = sx(p.px) - u.x, dy = sy(p.py) - u.y, d = dx * dx + dy * dy;
+      if (d < bd){ bd = d; best = i; }
+    });
+    return bd <= 900 ? best : -1;
+  }
+  svg.addEventListener("mousemove", function(ev){
+    const best = nearest(ev);
+    svg.style.cursor = best >= 0 ? "pointer" : "";
+    if (best < 0){ clearHighlight(); return; }
+    highlight(best);
+    showTip(card, ev.clientX, ev.clientY, readout(best), STATE.flag[best]);
+  });
+  svg.addEventListener("mouseleave", clearHighlight);
+  // 점 위 클릭 = 선택, 빈 곳 클릭 = 해제. 문서 전체의 "해제" 핸들러까지 올라가지 않게 막는다
+  svg.addEventListener("click", function(ev){
+    ev.stopPropagation();
+    selectPoint(nearest(ev));
+  });
+}
+
+/* ---------------- group focus ---------------- */
+// 칩에 호버하면 그 그룹만 잠깐(gHover), 클릭하면 고정(gPin, 같은 칩을 다시 누르면 해제).
+// 호버가 고정보다 우선 — 고정한 채로 다른 칩을 훑어볼 수 있게
+function focusGroup(){ return STATE.gHover >= 0 ? STATE.gHover : STATE.gPin; }
+// 3D 캔버스용 불투명도 배율. 2D의 CSS(.12)와 같은 정도로 흐린다
+function focusDim(g){ const f = focusGroup(); return f < 0 || f === g ? 1 : 0.12; }
+function updateFocusUI(){
+  const f = focusGroup();
+  const main = document.getElementById("main");
+  if (f >= 0) main.setAttribute("data-focus", f); else main.removeAttribute("data-focus");
+  document.querySelectorAll("#legend .leg").forEach(function(el){
+    const g = +el.getAttribute("data-g");
+    el.classList.toggle("focus", g === f);
+    el.classList.toggle("pinned", g === STATE.gPin);
+  });
+}
+function applyFocus(){ updateFocusUI(); draw3d(); }
+
+// 선택은 네 패널 공통. -1 이면 해제
+function selectPoint(i){
+  STATE.sel = i;
+  CHARTS.forEach(function(c){ c.select(i); });
+  updateSelInfo();
+  draw3d();
+}
+function updateSelInfo(){
+  const el = document.getElementById("selInfo");
+  if (STATE.sel < 0 || !STATE.pts.length){ el.classList.add("hide"); return; }
+  el.textContent = readout(STATE.sel);
+  el.classList.toggle("flag", !!STATE.flag[STATE.sel]);
+  el.classList.remove("hide");
+}
+
+// 2D와 3D가 동시에 보이므로 하이라이트는 네 패널 전부에 건다
+function highlight(i){
+  CHARTS.forEach(function(c){ c.mark(i); });
+  mark3d(i);
+}
+function clearHighlight(){
+  CHARTS.forEach(function(c){ c.unmark(); });
+  if (HL3D !== -1){ HL3D = -1; draw3d(); }
+  hideTips();
+}
+
+/* ---------------- 3D view ---------------- */
+const V3 = { az: -0.6, el: 0.5, zoom: 1, exag: 1 };
+let HL3D = -1;
+let PROJ = [];          // projected screen positions, parallel to STATE.pts
+
+function cssVar(name){
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+// exaggeration slider (0..100) -> multiplier on a log scale
+function exagFromSlider(t){ return Math.pow(10, t / 100 * 3.3); }
+function sliderFromExag(x){ return Math.max(0, Math.min(100, Math.log10(x) / 3.3 * 100)); }
+
+function setupCanvas(host){
+  let cv = host.querySelector("canvas");
+  if (!cv){ cv = document.createElement("canvas"); host.appendChild(cv); }
+  const w = Math.max(200, host.clientWidth), h = Math.max(120, host.clientHeight);
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  cv.style.width = w + "px"; cv.style.height = h + "px";
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { cv: cv, ctx: ctx, w: w, h: h };
+}
+
+function draw3d(){
+  const host = document.getElementById("p3d");
+  const pts = STATE.pts, a = STATE.a;
+  if (!pts.length || !host.clientWidth) return;
+  const g = setupCanvas(host);
+  const ctx = g.ctx;
+  ctx.clearRect(0, 0, g.w, g.h);
+
+  const xSpan = (a.xe[1] - a.xe[0]) || 1;
+  const ySpan = (a.ye[1] - a.ye[0]) || 1;
+  const zSpan = (a.ze[1] - a.ze[0]) || 1;
+  const xc = (a.xe[0] + a.xe[1]) / 2, yc = (a.ye[0] + a.ye[1]) / 2, zc = (a.ze[0] + a.ze[1]) / 2;
+
+  // X and Y keep their true aspect ratio; Z is stretched by the exaggeration factor
+  const ca = Math.cos(V3.az), sa = Math.sin(V3.az);
+  const ce = Math.cos(V3.el), se = Math.sin(V3.el);
+  function rawProject(x, y, z){
+    const X = x - xc, Y = y - yc, Z = (z - zc) * V3.exag;
+    const x1 = X * ca - Y * sa;
+    const y1 = X * sa + Y * ca;
+    return { x: x1, y: y1 * se + Z * ce, d: y1 * ce - Z * se };
+  }
+
+  const hx = xSpan / 2, hy = ySpan / 2, hz = zSpan / 2;
+  const rawCorners = [];
+  for (const dx of [-1, 1]) for (const dy of [-1, 1]) for (const dz of [-1, 1])
+    rawCorners.push(rawProject(xc + dx * hx, yc + dy * hy, zc + dz * hz));
+  // Scale off the bounding sphere, not the projected outline: the radius does not
+  // change with the viewing angle, so rotating no longer rescales the object.
+  const radius = Math.hypot(hx, hy, hz * V3.exag) || 1;
+  const s = Math.min(g.w, g.h) * 0.42 / radius * V3.zoom;
+
+  const cx = g.w / 2, cy = g.h / 2;
+  function project(x, y, z){
+    const r = rawProject(x, y, z);
+    return { x: cx + r.x * s, y: cy - r.y * s, d: r.d };
+  }
+  const corners = rawCorners.map(function(c){ return { x: cx + c.x * s, y: cy - c.y * s, d: c.d }; });
+  const edges = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+  ctx.strokeStyle = cssVar("--line");
+  ctx.lineWidth = 1;
+  for (const e of edges){
+    ctx.beginPath();
+    ctx.moveTo(corners[e[0]].x, corners[e[0]].y);
+    ctx.lineTo(corners[e[1]].x, corners[e[1]].y);
+    ctx.stroke();
+  }
+
+
+  const gcols = GCOL.map(cssVar);
+
+  // 판정에 쓰는 바로 그 기준(ref)과 문턱(±kσ)을 그린다. 점보다 먼저 옅게 깔아서 점을 가리지 않고,
+  // Z 과장도 project()를 그대로 거치므로 점과 같은 배율로 늘어난다
+  const M = STATE.model;
+  const showRef = document.getElementById("showRef").checked;
+  const showBand = document.getElementById("showBand").checked;
+  const kTol = tolerance();
+  const GRID = 8;   // 곡면을 몇 칸으로 쪼개 그릴지 — 2차 곡면의 휨이 보일 만큼, 너무 촘촘하진 않게
+  function surfaceGrid(G, dz){
+    const P = [];
+    for (let i = 0; i <= GRID; i++){
+      const row = [];
+      for (let j = 0; j <= GRID; j++){
+        const x = G.x0 + (G.x1 - G.x0) * i / GRID, y = G.y0 + (G.y1 - G.y0) * j / GRID;
+        row.push(project(x, y, G.f(x, y) + dz));
+      }
+      P.push(row);
+    }
+    return P;
+  }
+  if (M){
+    M.groups.forEach(function(G, gi){
+      if (!G || !G.f) return;
+      const dim = focusDim(gi);
+      ctx.fillStyle = ctx.strokeStyle = gcols[gi];
+      // 기준면 — 옅은 면 + 테두리
+      if (showRef){
+        const P = surfaceGrid(G, 0);
+        ctx.globalAlpha = 0.09 * dim;
+        for (let i = 0; i < GRID; i++) for (let j = 0; j < GRID; j++){
+          ctx.beginPath();
+          ctx.moveTo(P[i][j].x, P[i][j].y); ctx.lineTo(P[i + 1][j].x, P[i + 1][j].y);
+          ctx.lineTo(P[i + 1][j + 1].x, P[i + 1][j + 1].y); ctx.lineTo(P[i][j + 1].x, P[i][j + 1].y);
+          ctx.closePath(); ctx.fill();
+        }
+        ctx.globalAlpha = 0.55 * dim; ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        for (let i = 0; i <= GRID; i++) ctx.lineTo(P[i][0].x, P[i][0].y);
+        for (let j = 0; j <= GRID; j++) ctx.lineTo(P[GRID][j].x, P[GRID][j].y);
+        for (let i = GRID; i >= 0; i--) ctx.lineTo(P[i][GRID].x, P[i][GRID].y);
+        for (let j = GRID; j >= 0; j--) ctx.lineTo(P[0][j].x, P[0][j].y);
+        ctx.stroke();
+      }
+      // 문턱 경계면 — 기준을 ±kσ 옮긴 두 장. 면은 칠하지 않고 점선 격자로만 (기준면과 구분)
+      if (showBand && isFinite(kTol) && G.sig > 0){
+        ctx.globalAlpha = 0.4 * dim; ctx.lineWidth = 0.9; ctx.setLineDash([4, 3]);
+        [1, -1].forEach(function(sgn){
+          const P = surfaceGrid(G, sgn * kTol * G.sig);
+          ctx.beginPath();
+          for (let i = 0; i <= GRID; i++){ ctx.moveTo(P[i][0].x, P[i][0].y); for (let j = 1; j <= GRID; j++) ctx.lineTo(P[i][j].x, P[i][j].y); }
+          for (let j = 0; j <= GRID; j++){ ctx.moveTo(P[0][j].x, P[0][j].y); for (let i = 1; i <= GRID; i++) ctx.lineTo(P[i][j].x, P[i][j].y); }
+          ctx.stroke();
+        });
+        ctx.setLineDash([]);
+      }
+    });
+    // 국소 중앙값은 그룹 전체를 덮는 면이 없다 — 점마다 자기 기준 ±kσ 구간을 세로 막대로,
+    // 기준 자체는 막대 가운데 작은 눈금으로
+    if (M.local){
+      pts.forEach(function(p, i){
+        const gi = groupOf(p.x), G = M.groups[gi];
+        if (!G) return;
+        const dim = focusDim(gi);
+        ctx.strokeStyle = gcols[gi];
+        if (showBand && isFinite(kTol) && G.sig > 0){
+          const lp = M.patch[i];
+          if (lp && lp.h > 0){
+            // 국소 평면이면 문턱도 판으로 — 기준 판을 위아래로 ±kσ 옮긴 두 장.
+            // 기준 판(채움)과 구분되게 채우지 않고 점선 테두리만
+            ctx.globalAlpha = 0.4 * dim; ctx.lineWidth = 0.8; ctx.setLineDash([3, 2.5]);
+            [1, -1].forEach(function(sgn){
+              const cs = [[-lp.h, -lp.h], [lp.h, -lp.h], [lp.h, lp.h], [-lp.h, lp.h]].map(function(o){
+                return project(p.x + o[0], p.y + o[1],
+                               M.ref[i] + sgn * kTol * G.sig + lp.b * o[0] + lp.c * o[1]);
+              });
+              ctx.beginPath();
+              ctx.moveTo(cs[0].x, cs[0].y);
+              for (let n = 1; n < 4; n++) ctx.lineTo(cs[n].x, cs[n].y);
+              ctx.closePath(); ctx.stroke();
+            });
+            ctx.setLineDash([]);
+          } else {
+            // 국소 중앙값은 기울기가 없으니 구간을 세로 막대로
+            const a1 = project(p.x, p.y, M.ref[i] - kTol * G.sig), a2 = project(p.x, p.y, M.ref[i] + kTol * G.sig);
+            ctx.globalAlpha = 0.45 * dim; ctx.lineWidth = 1.2;
+            ctx.beginPath(); ctx.moveTo(a1.x, a1.y); ctx.lineTo(a2.x, a2.y); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(a1.x - 2.5, a1.y); ctx.lineTo(a1.x + 2.5, a1.y);
+            ctx.moveTo(a2.x - 2.5, a2.y); ctx.lineTo(a2.x + 2.5, a2.y); ctx.stroke();
+          }
+        }
+        if (showRef){
+          const lp = M.patch[i];
+          if (lp && lp.h > 0){
+            // 국소 평면 자체를 그 기울기대로 작은 판으로 — 판이 점 주변에서 실제로 어떻게
+            // 기울어 있는지 보이게. 판 크기는 그 점의 이웃 반경에 비례한다
+            const cs = [[-lp.h, -lp.h], [lp.h, -lp.h], [lp.h, lp.h], [-lp.h, lp.h]].map(function(o){
+              return project(p.x + o[0], p.y + o[1], M.ref[i] + lp.b * o[0] + lp.c * o[1]);
+            });
+            ctx.beginPath();
+            ctx.moveTo(cs[0].x, cs[0].y);
+            for (let n = 1; n < 4; n++) ctx.lineTo(cs[n].x, cs[n].y);
+            ctx.closePath();
+            ctx.fillStyle = gcols[gi]; ctx.globalAlpha = 0.10 * dim; ctx.fill();
+            ctx.globalAlpha = 0.38 * dim; ctx.lineWidth = 0.8; ctx.stroke();
+          } else {
+            const c = project(p.x, p.y, M.ref[i]);
+            ctx.globalAlpha = 0.7 * dim; ctx.lineWidth = 1.6;
+            ctx.beginPath(); ctx.moveTo(c.x - 3.5, c.y); ctx.lineTo(c.x + 3.5, c.y); ctx.stroke();
+          }
+        }
+      });
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // points, far to near
+  PROJ = pts.map(function(p, i){ const q = project(p.x, p.y, p.z); q.i = i; return q; });
+  const order = PROJ.slice().sort(function(u, v){ return v.d - u.d; });
+  for (const q of order){
+    if (q.i === HL3D) continue;
+    const gi = groupOf(pts[q.i].x);
+    ctx.globalAlpha = 0.8 * focusDim(gi);
+    ctx.fillStyle = gcols[gi];
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 2.9, 0, 6.2832);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // 허용오차 밖 점은 깊이와 무관하게 맨 위에 링을 그린다 — 뒤쪽 점에 가려지면 놓치므로
+  ctx.strokeStyle = cssVar("--warn");
+  ctx.lineWidth = 1.9;
+  for (const q of PROJ){
+    if (!STATE.flag[q.i]) continue;
+    ctx.globalAlpha = focusDim(groupOf(pts[q.i].x));
+    ctx.beginPath(); ctx.arc(q.x, q.y, 5.6, 0, 6.2832); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // 클릭으로 고정한 점 — 2D와 같은 모양(후광 + 굵은 링)
+  if (STATE.sel >= 0 && PROJ[STATE.sel]){
+    const q = PROJ[STATE.sel];
+    const ink = cssVar("--ink");
+    ctx.fillStyle = ink; ctx.globalAlpha = 0.13;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 13, 0, 6.2832); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = ink; ctx.lineWidth = 2.6;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 8.5, 0, 6.2832); ctx.stroke();
+    ctx.beginPath(); ctx.arc(q.x, q.y, 3.4, 0, 6.2832); ctx.fill();
+  }
+
+  if (HL3D >= 0 && PROJ[HL3D]){
+    const q = PROJ[HL3D];
+    ctx.fillStyle = gcols[groupOf(pts[HL3D].x)];
+    ctx.beginPath(); ctx.arc(q.x, q.y, 3.6, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(q.x, q.y, 7.5, 0, 6.2832);
+    ctx.strokeStyle = cssVar("--ink"); ctx.lineWidth = 1.7; ctx.stroke();
+  }
+}
+function mark3d(i){ HL3D = i; draw3d(); }
+
+function init3d(){
+  const host = document.getElementById("p3d");
+  let dragging = false, lx = 0, ly = 0, dx0 = 0, dy0 = 0;
+
+  function nearest3d(clientX, clientY){
+    const r = host.getBoundingClientRect();
+    const mx = clientX - r.left, my = clientY - r.top;
+    let best = -1, bd = 1e9;
+    for (const q of PROJ){
+      const d = (q.x - mx) * (q.x - mx) + (q.y - my) * (q.y - my);
+      if (d < bd){ bd = d; best = q.i; }
+    }
+    return bd <= 100 ? best : -1;
+  }
+
+  host.addEventListener("mousedown", function(ev){
+    dragging = true; lx = dx0 = ev.clientX; ly = dy0 = ev.clientY;
+    host.style.cursor = "";
+    host.classList.add("drag"); hideTips();
+    ev.preventDefault();
+  });
+  window.addEventListener("mouseup", function(ev){
+    if (!dragging) return;
+    dragging = false; host.classList.remove("drag");
+    // 거의 안 움직였으면 회전이 아니라 클릭 — 점 위면 선택, 빈 곳이면 해제
+    if (Math.hypot(ev.clientX - dx0, ev.clientY - dy0) < 4) selectPoint(nearest3d(ev.clientX, ev.clientY));
+  });
+  // 회전 드래그가 끝나며 생기는 click 이 문서의 "해제" 핸들러로 가지 않게 막는다
+  host.addEventListener("click", function(ev){ ev.stopPropagation(); });
+  window.addEventListener("mousemove", function(ev){
+    if (!dragging) return;
+    V3.az += (ev.clientX - lx) * 0.01;
+    V3.el = Math.max(-1.5, Math.min(1.5, V3.el + (ev.clientY - ly) * 0.01));
+    lx = ev.clientX; ly = ev.clientY;
+    draw3d();
+  });
+  host.addEventListener("mousemove", function(ev){
+    if (dragging || !PROJ.length) return;
+    const best = nearest3d(ev.clientX, ev.clientY);
+    host.style.cursor = best >= 0 ? "pointer" : "";
+    if (best < 0){ clearHighlight(); return; }
+    // 2D 세 패널과 같이 보이므로 여기서도 네 패널 전부를 짚는다
+    if (best !== HL3D) highlight(best);
+    showTip(host.closest(".card"), ev.clientX, ev.clientY, readout(best), STATE.flag[best]);
+  });
+  host.addEventListener("mouseleave", function(){
+    if (dragging) return;
+    clearHighlight();
+  });
+  host.addEventListener("wheel", function(ev){
+    ev.preventDefault();
+    V3.zoom = Math.max(0.3, Math.min(6, V3.zoom * (ev.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    draw3d();
+  }, { passive: false });
+
+  document.getElementById("exag").addEventListener("input", function(e){
+    V3.exag = exagFromSlider(+e.target.value);
+    document.getElementById("exagVal").textContent = fmt(V3.exag, V3.exag < 10 ? 1 : 0) + "×";
+    draw3d();
+  });
+  document.getElementById("reset3d").addEventListener("click", function(){
+    V3.az = -0.6; V3.el = 0.5; V3.zoom = 1;
+    defaultExag();
+    draw3d();
+  });
+}
+// start at an exaggeration that makes the Z relief about 40% of the XY footprint
+function defaultExag(){
+  const a = STATE.a;
+  if (!a) return;
+  const xy = Math.max(a.xe[1] - a.xe[0], a.ye[1] - a.ye[0]) || 1;
+  const z = (a.ze[1] - a.ze[0]) || 1;
+  V3.exag = Math.max(1, Math.min(2000, 0.4 * xy / z));
+  document.getElementById("exag").value = sliderFromExag(V3.exag);
+  document.getElementById("exagVal").textContent = fmt(V3.exag, V3.exag < 10 ? 1 : 0) + "×";
+}
+
+/* ---------------- render ---------------- */
+const STATE = { pts: [], groups: [], name: "", source: "", a: null, res: [], sig: [], flag: [], model: null, sel: -1,
+                gHover: -1, gPin: -1 };
+
+function render(){
+  const pts = STATE.pts;
+  if (!pts.length) return;
+  const a = analyze(pts);
+  STATE.a = a;
+
+  const tiltX = a.pl.b * 1000, tiltY = a.pl.c * 1000;   // µm/mm
+  function stat(k, v, u){
+    return '<div class="stat">' + k + '<b>' + v + '</b><i>' + (u || "") + '</i></div>';
+  }
+  document.getElementById("stats").innerHTML =
+      stat("Points", a.n, "")
+    + stat("Z range", fmt(a.span, 2), "µm")
+    + stat("Z mean ± SD", fmt(a.mean, 1) + " ± " + fmt(a.sd, 2), "µm")
+    + stat("Plane deviation RMS", fmt(a.planeRms, 2), "µm")
+    + stat("Tilt X / Y", fmt(tiltX, 2) + " / " + fmt(tiltY, 2), "µm/mm")
+    + stat("Max step", fmt(a.maxStep, 2), "µm");
+
+  STATE.model = buildModel(pts, document.getElementById("method").value);
+  STATE.res = STATE.model.res;
+  STATE.sig = STATE.model.groups.map(function(G){ return G ? G.sig : 0; });
+  const k = tolerance();
+  // 그룹마다 자기 σ 로 문턱을 잡는다. σ 가 0 이면(점 1개 등) 문턱이 무의미하므로 판정하지 않는다
+  STATE.flag = STATE.res.map(function(r, i){
+    const sg = STATE.sig[groupOf(pts[i].x)];
+    return sg > 0 && Math.abs(r) > k * sg;
+  });
+
+  const counts = [0, 0, 0, 0], flagged = [0, 0, 0, 0];
+  pts.forEach(function(p, i){
+    const g = groupOf(p.x);
+    counts[g]++;
+    if (STATE.flag[i]) flagged[g]++;
+  });
+  document.getElementById("flagN").textContent = flagged.reduce(function(a, b){ return a + b; }, 0);
+  document.getElementById("legend").innerHTML = GCOL.map(function(v, g){
+    return '<div class="stat leg" data-g="' + g + '" title="Hover to highlight this group · click to keep it highlighted">'
+         + '<span class="sw" style="background:var(' + v + ')"></span>'
+         + '<em>Group ' + (g + 1) + '</em> ' + groupLabel(g) + ' µm · ' + counts[g] + ' pts'
+         + (counts[g] ? ' · σ ' + fmt(STATE.sig[g], 1) + ' µm' : '')
+         + (flagged[g] ? ' · <span class="fl">' + flagged[g] + ' flagged</span>' : '') + '</div>';
+  }).join("");
+  // 칩은 매번 새로 만들어지므로 이벤트도 여기서 다시 단다
+  document.querySelectorAll("#legend .leg").forEach(function(el){
+    const g = +el.getAttribute("data-g");
+    el.addEventListener("mouseenter", function(){ STATE.gHover = g; applyFocus(); });
+    el.addEventListener("mouseleave", function(){ STATE.gHover = -1; applyFocus(); });
+    el.addEventListener("click", function(){
+      STATE.gPin = STATE.gPin === g ? -1 : g;
+      applyFocus();
+    });
+  });
+  updateFocusUI();
+
+  render2d();
+  draw3d();
+  updateSelInfo();   // 기준 방법·허용오차가 바뀌면 선택한 점의 수치도 갱신된다
+}
+function render2d(){
+  const pts = STATE.pts, a = STATE.a;
+  CHARTS.length = 0;
+  // one shared Z scale so the three panels can be compared directly
+  const base = { yDomain: padRange(a.zmin, a.zmax, 0.08) };
+
+  renderChart(document.getElementById("c1"), Object.assign({
+    mode: "line", xUnit: "scan order",
+    points: pts.map(function(p, i){ return { px: i + 1, py: p.z, i: i }; }),
+    xDomain: [1, Math.max(2, pts.length)]
+  }, base));
+
+  renderChart(document.getElementById("c2"), Object.assign({
+    mode: "scatter", xUnit: "X (µm)",
+    points: pts.map(function(p, i){ return { px: p.x, py: p.z, i: i }; }),
+    xDomain: padRange(a.xe[0], a.xe[1], 0.04)
+  }, base));
+
+  renderChart(document.getElementById("c3"), Object.assign({
+    mode: "scatter", xUnit: "Y (µm)",
+    points: pts.map(function(p, i){ return { px: p.y, py: p.z, i: i }; }),
+    xDomain: padRange(a.ye[0], a.ye[1], 0.04)
+  }, base));
+}
+
+/* ---------------- file input ---------------- */
+const errBox = document.getElementById("err");
+function fail(msg){
+  errBox.textContent = msg;
+  errBox.classList.remove("hide");
+  ["topbar-tools", "main"].forEach(function(id){ document.getElementById(id).classList.add("hide"); });
+  document.getElementById("intro").classList.remove("hide");
+}
+function pick(i){
+  const g = STATE.groups[i];
+  STATE.pts = g.pts;
+  STATE.sel = -1;   // 다른 데이터에서 같은 번호를 짚지 않게
+  // the browser hides the uploaded file's own path, so show the one recorded in the XML
+  document.getElementById("fname").textContent = STATE.source || STATE.name;
+  document.getElementById("fmeta").textContent =
+    (STATE.source ? "uploaded as " + STATE.name + " · " : "") + g.pts.length + " points · " + g.key;
+  STATE.a = analyze(g.pts);
+  defaultExag();
+  render();
+}
+function load(file){
+  errBox.classList.add("hide");
+  const rd = new FileReader();
+  rd.onload = function(){
+    try {
+      const parsed = parseFile(rd.result);
+      STATE.groups = parsed.groups;
+      STATE.source = parsed.source;
+      STATE.name = file.name;
+      const sel = document.getElementById("group");
+      if (parsed.groups.length > 1){
+        sel.innerHTML = parsed.groups.map(function(g, i){
+          return '<option value="' + i + '">' + g.key.split(" / ").slice(-2).join(" / ")
+               + " (" + g.pts.length + ")</option>";
+        }).join("");
+        sel.classList.remove("hide");
+      } else {
+        sel.classList.add("hide");
+      }
+      sel.value = "0";
+      document.getElementById("intro").classList.add("hide");
+      ["topbar-tools", "main"].forEach(function(id){ document.getElementById(id).classList.remove("hide"); });
+      pick(0);
+    } catch (e){ fail(e.message); }
+  };
+  rd.onerror = function(){ fail("The file could not be read."); };
+  rd.readAsText(file);
+}
+
+document.getElementById("file").addEventListener("change", function(e){
+  if (e.target.files[0]) load(e.target.files[0]);
+  e.target.value = "";
+});
+document.getElementById("group").addEventListener("change", function(e){ pick(+e.target.value); });
+document.getElementById("tol").addEventListener("input", function(){ if (STATE.pts.length) render(); });
+["showRef", "showBand"].forEach(function(id){
+  document.getElementById(id).addEventListener("change", function(){ if (STATE.pts.length) draw3d(); });
+});
+document.getElementById("method").addEventListener("change", function(){ if (STATE.pts.length) render(); });
+// 그래프 밖 아무 데나 클릭하면 선택 해제. 단 입력칸·버튼 같은 컨트롤을 만질 때는 유지
+// (허용오차를 바꾸면서 같은 점을 계속 보고 싶을 수 있으므로)
+document.addEventListener("click", function(e){
+  if (STATE.sel < 0) return;
+  if (e.target.closest("input,button,select,label,a,.leg")) return;
+  selectPoint(-1);
+});
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape" && STATE.sel >= 0) selectPoint(-1);
+});
+
+const drop = document.getElementById("drop");
+["dragenter", "dragover"].forEach(function(t){
+  drop.addEventListener(t, function(){ drop.classList.add("over"); });
+});
+["dragleave", "drop"].forEach(function(t){
+  drop.addEventListener(t, function(){ drop.classList.remove("over"); });
+});
+// the drop zone is hidden once a file is loaded, so keep the whole window droppable
+["dragenter", "dragover", "drop"].forEach(function(t){
+  document.addEventListener(t, function(e){ e.preventDefault(); });
+});
+document.addEventListener("drop", function(e){
+  const f = e.dataTransfer && e.dataTransfer.files[0];
+  if (f) load(f);
+});
+
+document.getElementById("csv").addEventListener("click", function(){
+  const pts = STATE.pts;
+  if (!pts.length) return;
+  const lines = ["index,X,Y,Z"];
+  pts.forEach(function(p, i){ lines.push([i + 1, p.x, p.y, p.z].join(",")); });
+  const url = URL.createObjectURL(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = STATE.name.replace(/\.[^.]+$/, "") + "_focusmap.csv";
+  link.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+});
+
+/* ---------------- theme ---------------- */
+const THEME_KEY = "focus_map_viewer_theme";
+function applyTheme(theme){
+  document.documentElement.setAttribute("data-theme", theme);
+  const tb = document.getElementById("btnTheme");
+  // 버튼이 하나뿐이라 현재 상태 대신 "누르면 갈 곳"을 툴팁에 쓴다
+  if (tb) tb.title = theme === "light" ? "Switch to dark" : "Switch to light";
+  // SVG는 var()로 즉시 따라오지만 3D 캔버스는 그릴 때 색을 읽으므로 다시 그린다
+  if (STATE.pts.length) draw3d();
+}
+function setTheme(theme){
+  applyTheme(theme);
+  try { localStorage.setItem(THEME_KEY, theme); } catch(e){}
+}
+function initTheme(){
+  let theme = null;
+  try { theme = localStorage.getItem(THEME_KEY); } catch(e){}
+  if (!theme){
+    const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+    theme = prefersLight ? "light" : "dark";
+  }
+  applyTheme(theme);
+  if (window.matchMedia){
+    const mql = window.matchMedia("(prefers-color-scheme: light)");
+    // 사용자가 직접 고른 적이 없을 때만 시스템 설정을 따라간다
+    if (mql.addEventListener) mql.addEventListener("change", function(e){
+      let stored = null;
+      try { stored = localStorage.getItem(THEME_KEY); } catch(_){}
+      if (!stored) applyTheme(e.matches ? "light" : "dark");
+    });
+  }
+}
+document.getElementById("btnTheme").addEventListener("click", function(){
+  const cur = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+  setTheme(cur === "light" ? "dark" : "light");
+});
+
+initTheme();
+init3d();
+
+let rt = null;
+window.addEventListener("resize", function(){
+  clearTimeout(rt);
+  rt = setTimeout(render, 120);
+});
+</script>
+</body>
+</html>
